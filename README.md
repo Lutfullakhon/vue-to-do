@@ -2,6 +2,7 @@
 
 A single-page TODO app built with **Vue 3 (CDN)** that treats **each browser tab** as a separate project.
 Project title is editable (updates the page title), tasks support **subtasks (infinite depth)**, **search**, and **JSON import/export**. All data persists via `localStorage`.
+<img src="https://socialify.git.ci/Lutfullakhon/vue-to-do/image?language=1&owner=1&name=1&stargazers=1&theme=Light" alt="vue-to-do" width="640" height="320" />
 
 ## Features
 
