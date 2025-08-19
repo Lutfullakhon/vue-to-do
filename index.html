@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Vue TODO App</title>
+	<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+	<style>
+		:root {
+			--gap: 10px;
+			--bg: #f7f7fb;
+			--fg: #111;
+			--muted: #777;
+			--border: #e5e7eb;
+			--primary: #2563eb;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			padding: 24px;
+			font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+			color: var(--fg);
+			background: var(--bg);
+		}
+
+		.app {
+			max-width: 900px;
+			margin: 0 auto;
+		}
+
+		h1[contenteditable="true"] {
+			outline: none;
+			border-bottom: 1px dashed transparent;
+			transition: border-color .2s;
+		}
+
+		h1[contenteditable="true"]:focus {
+			border-color: var(--border);
+		}
+
+		.row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: var(--gap);
+			align-items: center;
+		}
+
+		.box {
+			background: white;
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 12px;
+		}
+
+		.controls {
+			gap: var(--gap);
+		}
+
+		input[type="text"] {
+			padding: 8px 10px;
+			border: 1px solid var(--border);
+			border-radius: 8px;
+			outline: none;
+			width: 100%;
+		}
+
+		input[type="text"]:focus {
+			border-color: var(--primary);
+		}
+
+		button {
+			appearance: none;
+			border: 1px solid var(--border);
+			background: white;
+			padding: 8px 10px;
+			border-radius: 8px;
+			cursor: pointer;
+		}
+
+		button:hover {
+			border-color: var(--primary);
+		}
+
+		.primary {
+			background: var(--primary);
+			color: white;
+			border-color: var(--primary);
+		}
+
+		.muted {
+			color: var(--muted);
+		}
+
+		.stack {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+		}
+
+		.task-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.task-title {
+			flex: 1;
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.task-title span {
+			padding: 2px 4px;
+			border-radius: 6px;
+		}
+
+		.task-title .done {
+			text-decoration: line-through;
+			color: var(--muted);
+		}
+
+		.task-actions {
+			display: flex;
+			gap: 6px;
+		}
+
+		.subtasks {
+			margin-left: 22px;
+			padding-left: 14px;
+			border-left: 2px dashed var(--border);
+		}
+
+		.small {
+			font-size: 13px;
+		}
+
+		.ghost {
+			opacity: .6;
+		}
+
+		.hide {
+			display: none;
+		}
+
+		.no-tasks {
+			text-align: center;
+			color: var(--muted);
+			padding: 20px 0;
+		}
+
+		.toolbar {
+			display: flex;
+			gap: var(--gap);
+			flex-wrap: wrap;
+		}
+
+		.toolbar .grow {
+			flex: 1 1 260px;
+		}
+
+		.task-input {
+			display: flex;
+			gap: 8px;
+		}
+
+		.w-200 {
+			width: 200px;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="app" class="app">
+		<!-- Editable Project Name -->
+		<h1 contenteditable="true" @input="onProjectNameInput" class="box" :title="'Rename project: ' + projectName">
+			{{ projectName }}
+		</h1>
+
+		<!-- Toolbar: Add root task + Search + Import/Export -->
+		<div class="box toolbar">
+			<div class="task-input grow">
+				<input type="text" v-model.trim="newTaskText" placeholder="Add a new task (Enter)" @keyup.enter="addTask()">
+				<button class="primary" @click="addTask()">Add</button>
+			</div>
+
+			<div class="grow">
+				<input type="text" v-model="searchQuery" placeholder="Search tasks (persists after reload)">
+			</div>
+
+			<div class="row controls">
+				<button @click="exportProject">Export</button>
+				<label>
+					<span class="small muted">Import</span>
+					<input type="file" class="hide" accept="application/json" @change="importProject">
+				</label>
+				<button @click="resetProject" title="New empty project (this tab only)">New Project</button>
+			</div>
+		</div>
+
+		<!-- Filter info -->
+		<div class="small muted" v-if="searchQuery">
+			Filtered by: <b>{{ searchQuery }}</b>
+			<button class="small" @click="searchQuery=''">Clear</button>
+		</div>
+
+		<!-- Tasks (tree) -->
+		<div class="box stack" v-if="filteredTasks.length">
+			<task-item v-for="t in filteredTasks" :key="t.id" :task="t" :depth="0" :handlers="handlers">
+			</task-item>
+		</div>
+		<div class="box no-tasks" v-else>
+			No tasks found.
+		</div>
+	</div>
+
+	<script>
+		const { createApp, defineComponent, reactive, computed, toRaw } = Vue
+
+		// ----- Utilities -----
+		const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+		function deepClone(obj) {
+			return JSON.parse(JSON.stringify(obj))
+		}
+
+		// Return a filtered copy of the tree, keeping a node if:
+		// - it matches the query, or
+		// - any descendant matches
+		function filterTree(tasks, q) {
+			if (!q) return deepClone(tasks)
+			const query = q.toLowerCase()
+
+			function matchNode(node) {
+				const selfMatch = node.text.toLowerCase().includes(query)
+				const keptChildren = (node.subtasks || []).map(matchNode).filter(Boolean)
+				if (selfMatch || keptChildren.length) {
+					return { ...node, subtasks: keptChildren }
+				}
+				return null
+			}
+
+			return tasks.map(matchNode).filter(Boolean)
+		}
+
+		// ----- Recursive Task Component -----
+		const TaskItem = defineComponent({
+			name: 'TaskItem',
+			props: {
+				task: { type: Object, required: true },
+				depth: { type: Number, required: true },
+				handlers: { type: Object, required: true },
+			},
+			data() {
+				return {
+					editing: false,
+					draft: this.task.text,
+					newSubText: ''
+				}
+			},
+			methods: {
+				startEdit() {
+					this.editing = true
+					this.$nextTick(() => {
+						const el = this.$refs.edit
+						if (el) { el.focus(); el.select() }
+					})
+				},
+				commitEdit() {
+					const t = this.draft.trim()
+					if (!t) return
+					this.handlers.renameTask(this.task.id, t)
+					this.editing = false
+				},
+				addSub() {
+					const txt = this.newSubText.trim()
+					if (!txt) return
+					this.handlers.addSubtask(this.task.id, txt)
+					this.newSubText = ''
+				}
+			},
+			template: `
+        <div class="stack">
+          <div class="task-row">
+            <input type="checkbox" :checked="task.done" @change="handlers.toggleTask(task.id)">
+            <div class="task-title" @dblclick="startEdit">
+              <template v-if="!editing">
+                <span :class="{done: task.done}">{{ task.text }}</span>
+              </template>
+              <template v-else>
+                <input ref="edit" type="text" v-model="draft" @keyup.enter="commitEdit" @blur="commitEdit">
+              </template>
+            </div>
+            <div class="task-actions">
+              <button title="Add subtask" @click="addSub">+ Subtask</button>
+              <button title="Edit title" @click="startEdit">Edit</button>
+              <button title="Delete" @click="handlers.removeTask(task.id)">Delete</button>
+            </div>
+          </div>
+
+          <!-- New subtask input -->
+          <div class="task-input" v-if="true">
+            <input type="text" v-model.trim="newSubText" placeholder="New subtask" @keyup.enter="addSub">
+          </div>
+
+          <!-- Subtasks -->
+          <div class="subtasks" v-if="task.subtasks && task.subtasks.length">
+            <task-item
+              v-for="st in task.subtasks"
+              :key="st.id"
+              :task="st"
+              :depth="depth + 1"
+              :handlers="handlers">
+            </task-item>
+          </div>
+        </div>
+      `
+		})
+
+		// ----- Root App -----
+		createApp({
+			components: { TaskItem },
+
+			setup() {
+				// per-tab storage (separate project per browser tab)
+				const STORAGE_KEY = 'todo-project-v1'
+				const SEARCH_KEY = 'todo-search-v1'
+
+				// load from sessionStorage or create new
+				function loadState() {
+					const raw = sessionStorage.getItem(STORAGE_KEY)
+					if (raw) {
+						try { return JSON.parse(raw) } catch (_) { }
+					}
+					return {
+						projectName: 'My Project',
+						tasks: [],
+					}
+				}
+
+				const state = reactive(loadState())
+
+				// search persists across reload in this tab
+				const searchQuery = Vue.ref(sessionStorage.getItem(SEARCH_KEY) || '')
+
+				function save() {
+					sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+						projectName: state.projectName,
+						tasks: state.tasks
+					}))
+					sessionStorage.setItem(SEARCH_KEY, searchQuery.value)
+					// Also keep the tab title updated
+					document.title = state.projectName || 'Vue TODO App'
+				}
+
+				// initialize title
+				document.title = state.projectName || 'Vue TODO App'
+
+				// ----- Handlers for Tree operations -----
+				function addTask(text) {
+					state.tasks.push({ id: uid(), text, done: false, subtasks: [] })
+					save()
+				}
+
+				function findAndOperate(tasks, id, op) {
+					for (const t of tasks) {
+						if (t.id === id) { op(t, tasks); return true }
+						if (t.subtasks && findAndOperate(t.subtasks, id, op)) return true
+					}
+					return false
+				}
+
+				function toggleTask(id) {
+					findAndOperate(state.tasks, id, (t) => { t.done = !t.done; save() })
+				}
+
+				function removeTask(id) {
+					findAndOperate(state.tasks, id, (t, list) => {
+						const i = list.findIndex(x => x.id === id)
+						if (i >= 0) list.splice(i, 1)
+						save()
+					})
+				}
+
+				function renameTask(id, newText) {
+					findAndOperate(state.tasks, id, (t) => { t.text = newText; save() })
+				}
+
+				function addSubtask(id, text) {
+					findAndOperate(state.tasks, id, (t) => {
+						t.subtasks = t.subtasks || []
+						t.subtasks.push({ id: uid(), text, done: false, subtasks: [] })
+						save()
+					})
+				}
+
+				// Filtered (tree-aware)
+				const filteredTasks = computed(() => filterTree(state.tasks, searchQuery.value))
+
+				// Watchers to persist
+				Vue.watch(() => state.projectName, save)
+				Vue.watch(() => state.tasks, save, { deep: true })
+				Vue.watch(searchQuery, save)
+
+				// Import / Export
+				function exportProject() {
+					const data = {
+						projectName: state.projectName,
+						tasks: state.tasks
+					}
+					const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+					const url = URL.createObjectURL(blob)
+					const a = document.createElement('a')
+					a.href = url
+					a.download = `${(state.projectName || 'project').replace(/[^\w\-]+/g, '_')}.json`
+					a.click()
+					URL.revokeObjectURL(url)
+				}
+
+				function importProject(e) {
+					const file = e.target.files[0]
+					e.target.value = '' // let the same file trigger again if needed
+					if (!file) return
+					const reader = new FileReader()
+					reader.onload = () => {
+						try {
+							const data = JSON.parse(reader.result)
+							// basic shape validation
+							if (!data || typeof data !== 'object' || !Array.isArray(data.tasks)) {
+								alert('Invalid file format')
+								return
+							}
+							state.projectName = data.projectName || 'Imported Project'
+							state.tasks = data.tasks
+							save()
+						} catch (err) {
+							alert('Invalid file format')
+						}
+					}
+					reader.readAsText(file)
+				}
+
+				function resetProject() {
+					state.projectName = 'My Project'
+					state.tasks = []
+					searchQuery.value = ''
+					save()
+				}
+
+				// Title contenteditable handler
+				function onProjectNameInput(ev) {
+					state.projectName = ev.target.innerText.trim() || 'Untitled Project'
+					save()
+				}
+
+				// Expose to template & children
+				const handlers = {
+					toggleTask,
+					removeTask,
+					renameTask,
+					addSubtask
+				}
+
+				// root new task input
+				const newTaskText = Vue.ref('')
+				function addTaskFromRoot() {
+					const t = newTaskText.value.trim()
+					if (!t) return
+					addTask(t)
+					newTaskText.value = ''
+				}
+
+				return {
+					// state
+					projectName: Vue.toRef(state, 'projectName'),
+					searchQuery,
+					newTaskText,
+					filteredTasks,
+
+					// methods
+					addTask: addTaskFromRoot,
+					exportProject,
+					importProject,
+					resetProject,
+					onProjectNameInput,
+
+					// pass to TaskItem
+					handlers
+				}
+			}
+		}).mount('#app');
+	</script>
+</body>
+
+</html>
